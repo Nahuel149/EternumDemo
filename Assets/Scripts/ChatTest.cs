@@ -10,18 +10,25 @@ using System.Text;
 using Newtonsoft.Json;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using Backend;
+using OpenAI;
+using System.Collections;
 
 namespace OpenAI
 {
     public class ChatTest : MonoBehaviour
     {
+#if UNITY_EDITOR
+        private readonly string SERVER_URL = ServerConfig.DEV_SERVER_URL;
+#else
+        private readonly string SERVER_URL = ServerConfig.PROD_SERVER_URL;
+#endif
+
         [SerializeField] private InputField inputField;
         [SerializeField] private Button button;
         [SerializeField] private ScrollRect scroll;
-
         [SerializeField] private RectTransform sent;
         [SerializeField] private RectTransform received;
-
         [SerializeField] private NpcInfo npcInfo;
         [SerializeField] private WorldInfo worldInfo;
         [SerializeField] private NpcDialog npcDialog;
@@ -32,44 +39,12 @@ namespace OpenAI
         [SerializeField] private string languageCode = "en-US";
         [SerializeField] private AudioSource audioSource;
 
-        private const string TTS_API_ENDPOINT = "https://texttospeech.googleapis.com/v1/text:synthesize";
-        private string apiKey; // Google Cloud API Key
         private HttpClient httpClient;
-
+        private OpenAIBackendApi openai;
         public UnityEvent OnReplyReceived;
-
         private float height;
-        private OpenAIApi openai = new OpenAIApi();
-        private List<ChatMessage> messages = new List<ChatMessage>();
-
-        [System.Serializable]
-        private class TTSRequest
-        {
-            public Input input;
-            public Voice voice;
-            public AudioConfig audioConfig;
-
-            [System.Serializable]
-            public class Input
-            {
-                public string text;
-            }
-
-            [System.Serializable]
-            public class Voice
-            {
-                public string languageCode;
-                public string name;
-                public string ssmlGender;
-            }
-
-            [System.Serializable]
-            public class AudioConfig
-            {
-                public string audioEncoding;
-                public int sampleRateHertz;
-            }
-        }
+        private List<Backend.ChatMessage> messages = new List<Backend.ChatMessage>();
+        private bool isProcessing = false;
 
         [System.Serializable]
         private class TTSResponse
@@ -79,23 +54,50 @@ namespace OpenAI
 
         private void Start()
         {
-            ValidateComponents();
-            InitializeAudioSource();
-            InitializeTTS();
-            InitializeSystemPrompt();
-            button.onClick.AddListener(() => SendReply(inputField.text));
+            Debug.Log($"[ChatTest] Initializing with Server URL: {SERVER_URL}");
+
+            try
+            {
+                ValidateComponents();
+                InitializeAudioSource();
+                InitializeTTS();
+
+                // Add delay before initializing system prompt
+                StartCoroutine(DelayedInitialization());
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[ChatTest] Error in Start: {e.Message}");
+            }
+        }
+
+        private IEnumerator DelayedInitialization()
+        {
+            yield return new WaitForSeconds(0.5f);
+
+            try
+            {
+                InitializeSystemPrompt();
+                openai = new OpenAIBackendApi();
+                button.onClick.AddListener(() => SendReply(inputField.text));
+                Debug.Log("[ChatTest] Initialization complete");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[ChatTest] Error in DelayedInitialization: {e.Message}");
+            }
         }
 
         private void ValidateComponents()
         {
-            if (scroll == null) { Debug.LogError("Scroll View not assigned!"); return; }
-            if (sent == null) { Debug.LogError("Sent prefab not assigned!"); return; }
-            if (received == null) { Debug.LogError("Received prefab not assigned!"); return; }
-            if (inputField == null) { Debug.LogError("Input Field not assigned!"); return; }
-            if (button == null) { Debug.LogError("Button not assigned!"); return; }
-            if (npcInfo == null) { Debug.LogError("NpcInfo not assigned!"); return; }
-            if (worldInfo == null) { Debug.LogError("WorldInfo not assigned!"); return; }
-            if (npcDialog == null) { Debug.LogError("NpcDialog not assigned!"); return; }
+            if (scroll == null) { Debug.LogError("[ChatTest] Scroll View not assigned!"); return; }
+            if (sent == null) { Debug.LogError("[ChatTest] Sent prefab not assigned!"); return; }
+            if (received == null) { Debug.LogError("[ChatTest] Received prefab not assigned!"); return; }
+            if (inputField == null) { Debug.LogError("[ChatTest] Input Field not assigned!"); return; }
+            if (button == null) { Debug.LogError("[ChatTest] Button not assigned!"); return; }
+            if (npcInfo == null) { Debug.LogError("[ChatTest] NpcInfo not assigned!"); return; }
+            if (worldInfo == null) { Debug.LogError("[ChatTest] WorldInfo not assigned!"); return; }
+            if (npcDialog == null) { Debug.LogError("[ChatTest] NpcDialog not assigned!"); return; }
         }
 
         private void InitializeAudioSource()
@@ -103,40 +105,20 @@ namespace OpenAI
             if (audioSource == null)
             {
                 audioSource = gameObject.AddComponent<AudioSource>();
+                Debug.Log("[ChatTest] Created new AudioSource component");
             }
         }
 
         private void InitializeTTS()
         {
-            try
-            {
-                // Get API key from environment variable
-                apiKey = System.Environment.GetEnvironmentVariable("GOOGLE_CLOUD_API_KEY");
-                if (string.IsNullOrEmpty(apiKey))
-                {
-                    Debug.LogError("GOOGLE_CLOUD_API_KEY environment variable not set!");
-                    useTTS = false;
-                    return;
-                }
-
-                httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                Debug.Log("TTS initialization completed. Testing connection...");
-
-                // Test TTS connection
-                _ = TestTTSConnection();
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Failed to initialize TTS: {e.Message}\nStackTrace: {e.StackTrace}");
-                useTTS = false;
-            }
+            httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            Debug.Log("[ChatTest] TTS client initialized");
         }
 
         private void InitializeSystemPrompt()
         {
-            var message = new ChatMessage
+            var message = new Backend.ChatMessage
             {
                 Role = "system",
                 Content =
@@ -153,23 +135,10 @@ namespace OpenAI
             };
 
             messages.Add(message);
+            Debug.Log("[ChatTest] System prompt initialized");
         }
 
-        private async Task TestTTSConnection()
-        {
-            try
-            {
-                await PlayTTSResponse("Test.");
-                Debug.Log("TTS test successful!");
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"TTS test failed: {e.Message}");
-                useTTS = false;
-            }
-        }
-
-        private RectTransform AppendMessage(ChatMessage message)
+        private RectTransform AppendMessage(Backend.ChatMessage message)
         {
             scroll.content.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, 0);
 
@@ -195,43 +164,123 @@ namespace OpenAI
             return item;
         }
 
+        public async void SendReply(string input)
+        {
+            if (string.IsNullOrEmpty(input) || isProcessing)
+            {
+                Debug.LogWarning("[ChatTest] Input is empty or already processing!");
+                return;
+            }
+
+            isProcessing = true;
+            button.enabled = false;
+            inputField.enabled = false;
+
+            try
+            {
+                Debug.Log($"[ChatTest] Sending message: {input}");
+                await SendReplyInternal(input);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[ChatTest] Error in SendReply: {e.Message}\nStackTrace: {e.StackTrace}");
+            }
+            finally
+            {
+                isProcessing = false;
+                button.enabled = true;
+                inputField.enabled = true;
+            }
+        }
+
+        private async Task SendReplyInternal(string input)
+        {
+            var userMessage = new Backend.ChatMessage()
+            {
+                Role = "user",
+                Content = input
+            };
+            messages.Add(userMessage);
+
+            await MainThread.Execute(() => AppendMessage(userMessage));
+            inputField.text = "";
+
+            var request = new Backend.CreateChatCompletionRequest
+            {
+                Model = "gpt-4o-mini",
+                Messages = messages,
+                Temperature = 0.7f
+            };
+
+            var completionResponse = await openai.CreateChatCompletion(request);
+
+            if (completionResponse.Choices != null && completionResponse.Choices.Count > 0)
+            {
+                var responseMessage = completionResponse.Choices[0].Message;
+                responseMessage.Content = responseMessage.Content.Trim();
+
+                Debug.Log($"[ChatTest] Received response: {responseMessage.Content}");
+
+                if (responseMessage.Content.Contains("END_CONVO"))
+                {
+                    responseMessage.Content = responseMessage.Content.Replace("END_CONVO", "");
+                    Debug.Log("[ChatTest] End conversation detected");
+                    await MainThread.Execute(() => Invoke(nameof(EndConvo), 5));
+                }
+
+                messages.Add(responseMessage);
+                await MainThread.Execute(() => AppendMessage(responseMessage));
+
+                await PlayTTSResponse(responseMessage.Content);
+
+                await MainThread.Execute(() => OnReplyReceived?.Invoke());
+            }
+            else
+            {
+                Debug.LogWarning("[ChatTest] No response generated from OpenAI.");
+            }
+        }
+
         private async Task PlayTTSResponse(string text)
         {
             if (!useTTS || string.IsNullOrEmpty(text)) return;
 
             try
             {
-                var ttsRequest = new TTSRequest
+                var ttsRequest = new
                 {
-                    input = new TTSRequest.Input { text = text },
-                    voice = new TTSRequest.Voice
+                    input = new { text = text },
+                    voice = new
                     {
                         languageCode = languageCode,
-                        name = voiceName,
-                        ssmlGender = "NEUTRAL"
+                        name = voiceName
                     },
-                    audioConfig = new TTSRequest.AudioConfig
+                    audioConfig = new
                     {
                         audioEncoding = "LINEAR16",
-                        sampleRateHertz = 16000
+                        speakingRate = 1.0,
+                        pitch = 0.0
                     }
                 };
 
-                var json = JsonConvert.SerializeObject(ttsRequest);
+                var json = JsonConvert.SerializeObject(ttsRequest, Formatting.Indented);
+                Debug.Log($"[ChatTest] TTS Request:\n{json}");
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                // Add API key to query string
-                var requestUrl = $"{TTS_API_ENDPOINT}?key={apiKey}";
+                var response = await httpClient.PostAsync($"{SERVER_URL}/api/tts", content);
+                Debug.Log($"[ChatTest] TTS Response Status: {response.StatusCode}");
 
-                var response = await httpClient.PostAsync(requestUrl, content);
                 if (!response.IsSuccessStatusCode)
                 {
-                    Debug.LogError($"TTS API Error: {response.StatusCode} - {await response.Content.ReadAsStringAsync()}");
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    Debug.LogError($"[ChatTest] TTS Error Response:\n{responseContent}");
                     return;
                 }
 
                 var responseJson = await response.Content.ReadAsStringAsync();
                 var ttsResponse = JsonConvert.DeserializeObject<TTSResponse>(responseJson);
+
+                Debug.Log("[ChatTest] TTS audio content received successfully");
 
                 var audioData = System.Convert.FromBase64String(ttsResponse.audioContent);
                 var audioClip = await ConvertToAudioClip(audioData);
@@ -240,11 +289,12 @@ namespace OpenAI
                 {
                     audioSource.clip = audioClip;
                     audioSource.Play();
+                    Debug.Log("[ChatTest] Playing TTS audio");
                 }
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"TTS Error: {e.Message}\nStackTrace: {e.StackTrace}");
+                Debug.LogError($"[ChatTest] TTS Error:\n{e.Message}\nStackTrace: {e.StackTrace}");
             }
         }
 
@@ -263,84 +313,20 @@ namespace OpenAI
 
                     if (www.result == UnityWebRequest.Result.Success)
                     {
+                        Debug.Log("[ChatTest] Audio clip converted successfully");
                         return DownloadHandlerAudioClip.GetContent(www);
                     }
                     else
                     {
-                        Debug.LogError($"Error loading audio clip: {www.error}");
+                        Debug.LogError($"[ChatTest] Error loading audio clip: {www.error}");
                         return null;
                     }
                 }
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"Error converting audio: {e.Message}\nStackTrace: {e.StackTrace}");
+                Debug.LogError($"[ChatTest] Error converting audio: {e.Message}\nStackTrace: {e.StackTrace}");
                 return null;
-            }
-        }
-
-        public async void SendReply(string input)
-        {
-            if (string.IsNullOrEmpty(input))
-            {
-                Debug.LogWarning("Input is empty!");
-                return;
-            }
-
-            button.enabled = false;
-            inputField.enabled = false;
-
-            try
-            {
-                var userMessage = new ChatMessage()
-                {
-                    Role = "user",
-                    Content = input
-                };
-                messages.Add(userMessage);
-                AppendMessage(userMessage);
-
-                inputField.text = "";
-
-                var completionResponse = await openai.CreateChatCompletion(
-                    new CreateChatCompletionRequest()
-                    {
-                        Model = "gpt-4o-mini",
-                        Messages = messages
-                    }
-                );
-
-                if (completionResponse.Choices != null && completionResponse.Choices.Count > 0)
-                {
-                    var responseMessage = completionResponse.Choices[0].Message;
-                    responseMessage.Content = responseMessage.Content.Trim();
-
-                    if (responseMessage.Content.Contains("END_CONVO"))
-                    {
-                        responseMessage.Content = responseMessage.Content.Replace("END_CONVO", "");
-                        Invoke(nameof(EndConvo), 5);
-                    }
-
-                    messages.Add(responseMessage);
-                    AppendMessage(responseMessage);
-
-                    await PlayTTSResponse(responseMessage.Content);
-
-                    OnReplyReceived?.Invoke();
-                }
-                else
-                {
-                    Debug.LogWarning("No response generated from OpenAI.");
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Error in SendReply: {e.Message}\nStackTrace: {e.StackTrace}");
-            }
-            finally
-            {
-                button.enabled = true;
-                inputField.enabled = true;
             }
         }
 
@@ -350,9 +336,10 @@ namespace OpenAI
             {
                 if (npcDialog != null)
                 {
+                    Debug.Log("[ChatTest] Ending conversation");
                     npcDialog.Recover();
                     messages.Clear();
-                    messages.Add(new ChatMessage
+                    messages.Add(new Backend.ChatMessage
                     {
                         Role = "system",
                         Content = messages[0].Content
@@ -361,12 +348,13 @@ namespace OpenAI
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"Error in EndConvo: {e.Message}");
+                Debug.LogError($"[ChatTest] Error in EndConvo: {e.Message}");
             }
         }
 
         private void OnDestroy()
         {
+            Debug.Log("[ChatTest] Cleaning up resources");
             if (button != null)
             {
                 button.onClick.RemoveAllListeners();
@@ -375,6 +363,7 @@ namespace OpenAI
             {
                 httpClient.Dispose();
             }
+            openai?.Dispose();
         }
     }
 }

@@ -1,26 +1,22 @@
 using UnityEngine;
-using OpenAI;
 using System.Collections.Generic;
-using System.Threading;
-using System.Linq;
+using Backend;
 
 public class OpenAITest : MonoBehaviour
 {
-    private OpenAIApi openai;
+    private OpenAIBackendApi openai;
 
     void Start()
     {
-        openai = new OpenAIApi(); // Automatically loads credentials from auth.json
+        openai = new OpenAIBackendApi();
         SendRequest();
-        // Uncomment the line below to test streaming requests
-        // SendStreamRequest();
     }
 
     private async void SendRequest()
     {
         var req = new CreateChatCompletionRequest
         {
-            Model = "gpt-3.5-turbo",
+            Model = "gpt-4o-mini",
             Messages = new List<ChatMessage>
             {
                 new ChatMessage
@@ -28,7 +24,8 @@ public class OpenAITest : MonoBehaviour
                     Role = "user",
                     Content = "Hello!"
                 }
-            }
+            },
+            Temperature = 0.7f
         };
 
         try
@@ -39,36 +36,12 @@ public class OpenAITest : MonoBehaviour
         catch (System.Exception e)
         {
             Debug.LogError("Error: " + e.Message);
+            Debug.LogError("Stack Trace: " + e.StackTrace);
         }
     }
 
-    private void SendStreamRequest()
+    private void OnDestroy()
     {
-        var req = new CreateChatCompletionRequest
-        {
-            Model = "gpt-3.5-turbo",
-            Messages = new List<ChatMessage>
-            {
-                new ChatMessage
-                {
-                    Role = "user",
-                    Content = "Write a 100 word long short story in La Fontaine style."
-                }
-            },
-            Temperature = 0.7f,
-        };
-
-        openai.CreateChatCompletionAsync(req,
-            (responses) =>
-            {
-                var result = string.Join("", responses.Select(response => response.Choices[0].Delta.Content));
-                Debug.Log(result);
-            },
-            () =>
-            {
-                Debug.Log("completed");
-            },
-            new CancellationTokenSource()
-        );
+        openai?.Dispose();
     }
 }
